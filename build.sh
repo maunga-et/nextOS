@@ -1,4 +1,10 @@
 #!/bin/sh
-# Simple build command for NextOS using streamline
+# Default entry point: run the single full build pipeline.
+# Use --streamline to run the legacy wrapper pipeline.
 
-exec ./build/streamline.sh "$@"
+if [ "${1:-}" = "--streamline" ]; then
+    shift
+    exec ./build/streamline.sh "$@"
+fi
+
+exec ./full-build.sh "$@"

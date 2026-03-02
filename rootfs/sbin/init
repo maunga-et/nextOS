@@ -8,6 +8,14 @@ echo "NextOS — Rootfs Init (PID $$)"
 echo "Kernel: $(uname -r)"
 echo ""
 
+# Try to keep root writable when possible.
+# If booted from ISO without overlay this may legitimately stay read-only.
+if mount -o remount,rw / 2>/dev/null; then
+    echo "Root filesystem remounted read-write"
+else
+    echo "Root filesystem is read-only (check initramfs overlay setup)"
+fi
+
 # Mount runtime filesystems
 mount -t tmpfs tmpfs /run 2>/dev/null && echo "Mounted /run"
 mount -t tmpfs tmpfs /tmp 2>/dev/null && echo "Mounted /tmp"

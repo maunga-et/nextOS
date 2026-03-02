@@ -78,22 +78,25 @@ echo "[init] Devices after settle: $(ls /dev/sr* /dev/hd* /dev/sd* /dev/vd* 2>/d
 # ── 7. Parse kernel command line ──────────────────────────────
 ROOTFS_PATH="/boot/rootfs.img"
 ROOT_MOUNT_OPT="rw"
+USE_OVERLAY="1"
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         nextos.rootfs=*) ROOTFS_PATH="${arg#nextos.rootfs=}" ;;
         ro|rw)           ROOT_MOUNT_OPT="$arg" ;;
+        nextos.overlay=0) USE_OVERLAY="0" ;;
     esac
 done
 
 echo "[init] Kernel cmdline: $(cat /proc/cmdline)"
 echo "[init] Expecting rootfs at: $ROOTFS_PATH"
+echo "[init] Root mount mode: $ROOT_MOUNT_OPT (overlay=$USE_OVERLAY)"
 
 # ── 8. Prefer persistent disk rootfs (sda1) ───────────────────
 ROOT_MOUNTED=0
 if [ -b /dev/sda1 ]; then
     echo "[init] Found /dev/sda1 — trying persistent rootfs..."
     mkdir -p /mnt/root
-    if mount -t ext4 -o rw /dev/sda1 /mnt/root 2>/dev/null; then
+    if mount -t ext4 -o "$ROOT_MOUNT_OPT" /dev/sda1 /mnt/root 2>/dev/null; then
         echo "[init] Persistent rootfs mounted from /dev/sda1"
         ROOT_MOUNTED=1
     else
@@ -143,49 +146,65 @@ for ISO_DEV in $CANDIDATES; do
             if losetup "$LOOP_DEV" "/mnt/iso${ROOTFS_PATH}" 2>/dev/null; then
                 echo "[init] Attached rootfs.img → $LOOP_DEV"
 
-                mkdir -p /mnt/root /mnt/root-ro /mnt/overlay/upper /mnt/overlay/work
+                mkdir -p /mnt/root /mnt/root-ro /mnt/overlay
 
-                # Mount tmpfs for overlay
-                if ! mount -t tmpfs tmpfs /mnt/overlay; then
-                    echo "[init] ERROR: Cannot mount tmpfs for overlay!"
+                # Read-only boot requested: mount rootfs image directly as ro.
+                if [ "$ROOT_MOUNT_OPT" = "ro" ]; then
+                    if mount -t ext4 -o ro "$LOOP_DEV" /mnt/root 2>/dev/null; then
+                        echo "[init] Mounted rootfs.img read-only (ro cmdline)"
+                        ROOT_MOUNTED=1
+                        break
+                    fi
+                    echo "[init] ERROR: Cannot mount rootfs.img read-only."
                     losetup -d "$LOOP_DEV" 2>/dev/null
                     continue
                 fi
-                echo "[init] tmpfs mounted for overlay upper/work"
 
-                # Mount lower layer (read-only rootfs)
-                if ! mount -t ext4 -o ro "$LOOP_DEV" /mnt/root-ro; then
-                    echo "[init] ERROR: Cannot mount rootfs.img as lower layer!"
-                    umount /mnt/overlay 2>/dev/null
-                    losetup -d "$LOOP_DEV" 2>/dev/null
-                    continue
-                fi
-                echo "[init] Read-only lower layer mounted"
+                # ISO media is read-only. Writable live root requires overlayfs.
+                if [ "$USE_OVERLAY" = "1" ]; then
+                    if ! mount -t tmpfs tmpfs /mnt/overlay; then
+                        echo "[init] ERROR: Cannot mount tmpfs for overlay."
+                        losetup -d "$LOOP_DEV" 2>/dev/null
+                        continue
+                    fi
+                    mkdir -p /mnt/overlay/upper /mnt/overlay/work
+                    echo "[init] tmpfs mounted for overlay upper/work"
 
-                # Try overlay mount — this MUST succeed for writable rootfs
-                OVERLAY_ERR=$( { mount -t overlay overlay \
-                    -o lowerdir=/mnt/root-ro,upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work \
-                    /mnt/root; } 2>&1 )
-                
-                if [ $? -eq 0 ]; then
-                    echo "[init] ✓ Overlay writable mount successful!"
-                    ROOT_MOUNTED=1
-                    break
-                else
-                    echo "[init] ✗ Overlay mount failed: $OVERLAY_ERR"
-                    echo "[init] Trying direct read-write mount as fallback..."
-                    umount /mnt/root-ro 2>/dev/null
-                    umount /mnt/overlay 2>/dev/null
-                    
-                    if mount -t ext4 -o rw "$LOOP_DEV" /mnt/root 2>/dev/null; then
-                        echo "[init] WARNING: Mounted read-write directly (no overlay protection)"
+                    if ! mount -t ext4 -o ro "$LOOP_DEV" /mnt/root-ro; then
+                        echo "[init] ERROR: Cannot mount rootfs.img as overlay lower layer."
+                        umount /mnt/overlay 2>/dev/null
+                        losetup -d "$LOOP_DEV" 2>/dev/null
+                        continue
+                    fi
+                    echo "[init] Read-only lower layer mounted"
+
+                    OVERLAY_ERR=$( { mount -t overlay overlay \
+                        -o lowerdir=/mnt/root-ro,upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work \
+                        /mnt/root; } 2>&1 )
+
+                    if [ $? -eq 0 ]; then
+                        echo "[init] ✓ Overlay writable mount successful!"
                         ROOT_MOUNTED=1
                         break
                     else
-                        echo "[init] Direct RW mount also failed. Journal recovery issue:"
-                        dmesg | tail -5
+                        echo "[init] ✗ Overlay mount failed: $OVERLAY_ERR"
+                        echo "[init] Falling back to read-only rootfs (nextos.overlay=0 for explicit ro mode)."
+                        umount /mnt/root-ro 2>/dev/null
+                        umount /mnt/overlay 2>/dev/null
+
+                        if mount -t ext4 -o ro "$LOOP_DEV" /mnt/root 2>/dev/null; then
+                            ROOT_MOUNTED=1
+                            break
+                        fi
                         losetup -d "$LOOP_DEV" 2>/dev/null
                     fi
+                else
+                    echo "[init] Overlay disabled by cmdline; mounting read-only rootfs."
+                    if mount -t ext4 -o ro "$LOOP_DEV" /mnt/root 2>/dev/null; then
+                        ROOT_MOUNTED=1
+                        break
+                    fi
+                    losetup -d "$LOOP_DEV" 2>/dev/null
                 fi
             else
                 echo "[init] losetup failed on $LOOP_DEV."

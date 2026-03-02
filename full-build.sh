@@ -251,6 +251,8 @@ else
         --enable  CONFIG_ISO9660_FS          \
         --enable  CONFIG_BLK_DEV_LOOP        \
         --enable  CONFIG_EXT4_FS             \
+        --enable  CONFIG_OVERLAY_FS          \
+        --enable  CONFIG_TMPFS               \
         --enable  CONFIG_DEVTMPFS            \
         --enable  CONFIG_DEVTMPFS_MOUNT      \
         --enable  CONFIG_FB_VESA             \
@@ -308,10 +310,6 @@ ROOTFS_DIR="${ROOTFS_DIR:-./rootfs}"
 mkdir -p "$ROOTFS_DIR"/{bin,sbin,lib,lib64,dev,proc,sys,etc,tmp,run,var/log,home/user,root}
 
 # ── Bash ─────────────────────────────────────────────────────
-echo "CHecking current directory..."
-pwd
-sleep 10
-
 cp /bin/bash "$ROOTFS_DIR/bin/bash"
 
 # Create /bin/sh -> bash symlink so any #!/bin/sh scripts work
@@ -570,9 +568,11 @@ else
         sudo mkfs.ext4 -F -L "nextos-root" "$BOOT_DIR/rootfs.img"
 
         info "Populating rootfs image..."
-        sudo mount -o loop "$BOOT_DIR/rootfs.img" "$MNT_DIR"
+        sudo mount -o loop,rw "$BOOT_DIR/rootfs.img" "$MNT_DIR"
         sudo cp -a "$ROOTFS_DIR/." "$MNT_DIR/"
         sudo umount "$MNT_DIR"
+        # Mark filesystem clean now to avoid ext4 recovery remounts.
+        sudo e2fsck -pf "$BOOT_DIR/rootfs.img" >/dev/null || true
 
         ok "rootfs.img → $BOOT_DIR/rootfs.img ($(du -sh "$BOOT_DIR/rootfs.img" | cut -f1))"
     fi
