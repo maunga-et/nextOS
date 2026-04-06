@@ -1,0 +1,3 @@
+# NextOS default repositories
+deb http://repo.nextos.local/core stable main
+deb http://repo.nextos.local/community stable main

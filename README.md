@@ -85,6 +85,7 @@ nextOS/
 - [Security Model](docs/security_model.md)
 - [Kernel Build Notes](KernelBuildNotes.md)
 - [CI/CD Pipeline](docs/CI_CD.md)
+- [Desktop Environment Options](docs/DESKTOP_ENV_OPTIONS.md)
 
 ---
 
