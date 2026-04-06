@@ -52,3 +52,4 @@ __pycache__/
 
 rootfs/lib/
 startDOcker
+AGENTS*
