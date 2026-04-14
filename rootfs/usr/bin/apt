@@ -1,0 +1,73 @@
+#!/bin/sh
+
+PROG="$(basename "$0")"
+
+usage() {
+    cat <<EOF
+NextOS APT compatibility frontend
+Usage:
+  apt update
+  apt install <package...>
+  apt remove <package...>
+  apt search <term>
+  apt show <package>
+  apt list
+EOF
+}
+
+collect_pkgs() {
+    out=""
+    for arg in "$@"; do
+        case "$arg" in
+            -*) ;;
+            *) out="$out $arg" ;;
+        esac
+    done
+    echo "$out"
+}
+
+run_apt_command() {
+    cmd="$1"
+    shift
+    case "$cmd" in
+        update) npkg update ;;
+        install|reinstall)
+            pkgs="$(collect_pkgs "$@")"
+            [ -n "$pkgs" ] || { echo "E: No packages provided"; exit 1; }
+            # shellcheck disable=SC2086
+            npkg install $pkgs ;;
+        remove|purge|autoremove)
+            pkgs="$(collect_pkgs "$@")"
+            [ -n "$pkgs" ] || { echo "E: No packages provided"; exit 1; }
+            # shellcheck disable=SC2086
+            npkg remove $pkgs ;;
+        search)
+            [ -n "$1" ] || { echo "E: search needs a term"; exit 1; }
+            npkg search "$1" ;;
+        show|info)
+            [ -n "$1" ] || { echo "E: show needs a package name"; exit 1; }
+            npkg info "$1" ;;
+        list) npkg list ;;
+        upgrade|dist-upgrade|full-upgrade) npkg upgrade ;;
+        clean|autoclean) npkg clean ;;
+        help|--help|-h|"") usage ;;
+        *) echo "E: unsupported apt command: $cmd"; usage; exit 1 ;;
+    esac
+}
+
+case "$PROG" in
+    apt|apt-get)
+        run_apt_command "$@"
+        ;;
+    apt-cache)
+        case "$1" in
+            search) shift; npkg search "$1" ;;
+            show|policy) shift; npkg info "$1" ;;
+            *) usage; exit 1 ;;
+        esac
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

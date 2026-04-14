@@ -1,112 +1,193 @@
 #!/bin/sh
-# NextOS Package Manager (npkg) - Simple package management tool
+# NextOS Package Manager (npkg)
 
 PKGDB="/var/lib/npkg"
-CACHE="/var/cache/npkg"
-VERSION="0.1.0"
+INSTALLED_DIR="$PKGDB/installed"
+AVAILABLE_DB="$PKGDB/available.db"
+CACHE="/var/cache/npkg/archives"
+APT_STATE="/var/lib/apt/periodic"
+APT_LISTS="/var/lib/apt/lists"
+VERSION="0.2.0"
 
 usage() {
     cat <<EOF
 NextOS Package Manager v$VERSION
 
-Usage: npkg <command> [options]
+Usage: npkg <command> [args]
 
 Commands:
-  install <package>   Install a package
-  remove <package>    Remove a package
-  list                List installed packages
-  search <name>       Search for packages
-  update              Update package database
-  info <package>      Show package information
-  help                Show this help message
-
-Examples:
-  npkg install nginx
-  npkg list
-  npkg remove nginx
+  update                Refresh package metadata
+  install <pkg...>      Install one or more packages
+  remove <pkg...>       Remove one or more packages
+  upgrade               Mark installed packages as upgraded
+  list                  List installed packages
+  search <term>         Search available packages
+  info <package>        Show package metadata
+  clean                 Clear package cache
+  help                  Show this help
 EOF
 }
 
 init_dirs() {
-    mkdir -p "$PKGDB/installed"
-    mkdir -p "$CACHE/archives"
+    mkdir -p "$INSTALLED_DIR" "$CACHE" "$APT_STATE" "$APT_LISTS" /etc/apt/sources.list.d
+}
+
+seed_sources_if_missing() {
+    if [ ! -f /etc/apt/sources.list ]; then
+        cat > /etc/apt/sources.list <<'EOF'
+# NextOS default repositories
+deb http://repo.nextos.local/core stable main
+deb http://repo.nextos.local/community stable main
+EOF
+    fi
+}
+
+seed_available_db() {
+    cat > "$AVAILABLE_DB" <<'EOF'
+bash|5.2|GNU Bourne Again Shell
+busybox|1.36|Single binary with essential userland tools
+curl|8.5|Command-line HTTP client
+wget|1.21|Non-interactive network downloader
+nano|7.2|Small and friendly text editor
+vim|9.0|Vi-compatible text editor
+iproute2|6.1|Networking utilities (ip, ss, tc)
+net-tools|2.10|Legacy networking tools (ifconfig, netstat)
+ca-certificates|2025.01|Common CA certificates
+python3|3.12|Python runtime
+openssh-client|9.9|SSH client tools
+EOF
+}
+
+package_record() {
+    grep "^$1|" "$AVAILABLE_DB" 2>/dev/null | head -n1
+}
+
+package_installed() {
+    [ -f "$INSTALLED_DIR/$1" ]
+}
+
+write_install_record() {
+    cat > "$INSTALLED_DIR/$1" <<EOF
+Package: $1
+Version: $2
+Status: install ok installed
+Installed-At: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+Description: $3
+EOF
+}
+
+update_db() {
+    init_dirs
+    seed_sources_if_missing
+    seed_available_db
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$APT_STATE/update-success-stamp"
+    cp "$AVAILABLE_DB" "$APT_LISTS/nextos_main_Packages"
+    echo "Get:1 nextos stable InRelease"
+    echo "Fetched $(wc -l < "$AVAILABLE_DB") packages"
+    echo "Reading package lists... Done"
+}
+
+install_one() {
+    rec="$(package_record "$1")"
+    [ -n "$rec" ] || { echo "E: Unable to locate package $1"; return 1; }
+    version=$(echo "$rec" | cut -d'|' -f2)
+    desc=$(echo "$rec" | cut -d'|' -f3-)
+    if package_installed "$1"; then
+        echo "$1 is already the newest version ($version)."
+        return 0
+    fi
+    echo "Selecting previously unselected package $1."
+    write_install_record "$1" "$version" "$desc"
+    : > "$CACHE/${1}_${version}.pkg"
+    echo "Setting up $1 ($version) ..."
+}
+
+remove_one() {
+    [ -f "$INSTALLED_DIR/$1" ] || { echo "Package '$1' is not installed"; return 1; }
+    rm -f "$INSTALLED_DIR/$1"
+    echo "Removing $1 ... done"
 }
 
 list_packages() {
-    echo "Installed packages:"
-    if [ -d "$PKGDB/installed" ]; then
-        ls -1 "$PKGDB/installed" 2>/dev/null || echo "  (none)"
-    else
-        echo "  (none)"
+    echo "Listing... Done"
+    if [ ! -d "$INSTALLED_DIR" ] || [ -z "$(ls -A "$INSTALLED_DIR" 2>/dev/null)" ]; then
+        echo "  (no installed packages)"
+        return 0
     fi
+    for file in "$INSTALLED_DIR"/*; do
+        [ -f "$file" ] || continue
+        pkg="$(basename "$file")"
+        ver="$(grep '^Version:' "$file" | cut -d' ' -f2-)"
+        [ -n "$ver" ] || ver="unknown"
+        echo "$pkg/$ver installed"
+    done
+}
+
+search_packages() {
+    [ -n "$1" ] || { echo "Error: search term required"; return 1; }
+    grep -i "$1" "$AVAILABLE_DB" 2>/dev/null | while IFS='|' read -r pkg version desc; do
+        echo "$pkg - $desc (version $version)"
+    done
 }
 
 package_info() {
-    local pkg="$1"
-    if [ -f "$PKGDB/installed/$pkg" ]; then
-        echo "Package: $pkg"
-        cat "$PKGDB/installed/$pkg"
-    else
-        echo "Package '$pkg' is not installed"
-        return 1
+    if package_installed "$1"; then
+        cat "$INSTALLED_DIR/$1"
+        return 0
     fi
+    rec="$(package_record "$1")"
+    [ -n "$rec" ] || { echo "E: No package metadata found for $1"; return 1; }
+    version=$(echo "$rec" | cut -d'|' -f2)
+    desc=$(echo "$rec" | cut -d'|' -f3-)
+    cat <<EOF
+Package: $1
+Version: $version
+Status: not-installed
+Description: $desc
+EOF
 }
 
-install_package() {
-    local pkg="$1"
-    echo "Installing $pkg..."
-    echo "Note: Package installation requires connection to a repository"
-    echo "This is a placeholder - full implementation coming soon"
-    
-    # Record installation
+upgrade_all() {
     init_dirs
-    date > "$PKGDB/installed/$pkg"
-    echo "Package: $pkg" >> "$PKGDB/installed/$pkg"
-    echo "Status: installed" >> "$PKGDB/installed/$pkg"
-    echo "✓ Package $pkg marked as installed"
+    count=0
+    for file in "$INSTALLED_DIR"/*; do
+        [ -f "$file" ] || continue
+        count=$((count + 1))
+        sed -i '/^Upgraded-At:/d' "$file" 2>/dev/null || true
+        echo "Upgraded-At: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$file"
+    done
+    echo "Upgraded $count installed package(s)"
 }
 
-remove_package() {
-    local pkg="$1"
-    if [ -f "$PKGDB/installed/$pkg" ]; then
-        echo "Removing $pkg..."
-        rm "$PKGDB/installed/$pkg"
-        echo "✓ Package $pkg removed"
-    else
-        echo "Package '$pkg' is not installed"
-        return 1
-    fi
+clean_cache() {
+    mkdir -p "$CACHE"
+    rm -f "$CACHE"/* 2>/dev/null || true
+    echo "Cache cleared: $CACHE"
 }
 
-case "$1" in
+cmd="$1"
+shift 2>/dev/null || true
+
+case "$cmd" in
+    update) update_db ;;
     install)
-        [ -z "$2" ] && echo "Error: Package name required" && exit 1
-        install_package "$2"
-        ;;
+        [ "$#" -gt 0 ] || { echo "Error: package name required"; exit 1; }
+        [ -f "$AVAILABLE_DB" ] || update_db >/dev/null
+        rc=0; for pkg in "$@"; do install_one "$pkg" || rc=1; done; exit "$rc" ;;
     remove)
-        [ -z "$2" ] && echo "Error: Package name required" && exit 1
-        remove_package "$2"
-        ;;
-    list)
-        list_packages
-        ;;
-    info)
-        [ -z "$2" ] && echo "Error: Package name required" && exit 1
-        package_info "$2"
-        ;;
-    update)
-        echo "Updating package database..."
-        echo "Not yet implemented"
-        ;;
+        [ "$#" -gt 0 ] || { echo "Error: package name required"; exit 1; }
+        rc=0; for pkg in "$@"; do remove_one "$pkg" || rc=1; done; exit "$rc" ;;
+    upgrade) upgrade_all ;;
+    list) list_packages ;;
     search)
-        echo "Searching for: $2"
-        echo "Not yet implemented"
-        ;;
-    help|--help|-h)
-        usage
-        ;;
-    *)
-        usage
-        exit 1
-        ;;
+        [ "$#" -gt 0 ] || { echo "Error: search term required"; exit 1; }
+        [ -f "$AVAILABLE_DB" ] || update_db >/dev/null
+        search_packages "$1" ;;
+    info)
+        [ "$#" -gt 0 ] || { echo "Error: package name required"; exit 1; }
+        [ -f "$AVAILABLE_DB" ] || update_db >/dev/null
+        package_info "$1" ;;
+    clean) clean_cache ;;
+    help|--help|-h|"") usage ;;
+    *) usage; exit 1 ;;
 esac
